@@ -79,7 +79,7 @@ def safe_unique(df_, col):
 # =========================
 # LOADERS
 # =========================
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=120)
 def load_ventas():
     sheet = quote(SHEET_NAME)
     url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet}"
@@ -102,7 +102,7 @@ def load_ventas():
     df = money_round(df, ["venta_sin_iva", "costo", "utilidad_neta"], 2)
     return df
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=120)
 def load_compras():
     sheet = quote(SHEET_NAME_COMPRAS)
     url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID_COMPRAS}/gviz/tq?tqx=out:csv&sheet={sheet}"
@@ -147,7 +147,6 @@ dfc_f = dfc[(dfc["fecha"].dt.date >= d_ini) & (dfc["fecha"].dt.date <= d_fin)].c
 # =========================
 with st.sidebar:
     st.subheader("Filtros")
-
     especies = safe_unique(df_f, "especie")
     especie_sel = st.selectbox("Especie", ["(Todas)"] + especies)
 
@@ -187,30 +186,30 @@ b2.metric("Compras", f"${compras:,.2f}")
 st.divider()
 
 # =========================
-# ABAJO: MURO DE ESPECIES (CLICK) + DRILL DOWN
+# EXPLORADOR POR ESPECIE (CLICK -> DETALLE)
 # =========================
 if "especie_click" not in st.session_state:
     st.session_state.especie_click = None
 
 st.subheader("Explorador por ESPECIE (clic para ver detalle)")
 
-esp_cards = (
+esp = (
     df_f.groupby("especie", as_index=False)
     .agg(
-        utilidad=("utilidad_neta", "sum"),   # ya con -7%
+        utilidad=("utilidad_neta", "sum"),
         venta=("venta_sin_iva", "sum"),
         piezas=("cantidad", "sum"),
     )
 )
-esp_cards["margen_pct"] = (esp_cards["utilidad"] / esp_cards["venta"]).fillna(0)
-esp_cards = money_round(esp_cards, ["venta", "utilidad"], 2)
-esp_cards = int_round(esp_cards, ["piezas"])
+esp["margen_pct"] = (esp["utilidad"] / esp["venta"]).fillna(0)  # <- evita nan%
+esp = money_round(esp, ["venta", "utilidad"], 2)
+esp = int_round(esp, ["piezas"])
 
-# ORDEN: por UTILIDAD (de mayor a menor) y RESETEO para orden visual correcto
-esp_cards = esp_cards.sort_values("utilidad", ascending=False).reset_index(drop=True)
+# ORDEN: por UTILIDAD y reset para que el grid se vea ordenado
+esp = esp.sort_values("utilidad", ascending=False).reset_index(drop=True)
 
 cols = st.columns(5)
-for pos, row in esp_cards.iterrows():
+for pos, row in esp.iterrows():
     with cols[pos % 5]:
         label = (
             f"{row['especie']}\n\n"
@@ -219,76 +218,77 @@ for pos, row in esp_cards.iterrows():
         )
         if st.button(label, use_container_width=True, key=f"esp_{pos}"):
             st.session_state.especie_click = row["especie"]
+            st.rerun()
 
 c_clear, _ = st.columns([2, 8])
 if c_clear.button("Limpiar selección", use_container_width=True):
     st.session_state.especie_click = None
+    st.rerun()
 
+# =========================
+# DETALLE POR ESPECIE (PRODUCTOS)
+# =========================
 if st.session_state.especie_click:
     st.divider()
     esp_sel = st.session_state.especie_click
     st.subheader(f"Detalle de especie: {esp_sel}")
 
     dfx = df_f[df_f["especie"] == esp_sel].copy()
-    if dfx.empty:
-        st.warning("No hay datos para esa especie con los filtros actuales.")
-    else:
-        prod = (
-            dfx.groupby("articulo", as_index=False)
-            .agg(
-                piezas=("cantidad", "sum"),
-                venta_sin_iva=("venta_sin_iva", "sum"),
-                costo=("costo", "sum"),
-                utilidad_neta=("utilidad_neta", "sum"),
-            )
+
+    prod = (
+        dfx.groupby("articulo", as_index=False)
+        .agg(
+            piezas=("cantidad", "sum"),
+            venta_sin_iva=("venta_sin_iva", "sum"),
+            costo=("costo", "sum"),
+            utilidad_neta=("utilidad_neta", "sum"),
         )
-        prod["margen_pct"] = (prod["utilidad_neta"] / prod["venta_sin_iva"]).fillna(0)
+    )
+    prod["margen_pct"] = (prod["utilidad_neta"] / prod["venta_sin_iva"]).fillna(0)
 
-        prod = money_round(prod, ["venta_sin_iva", "costo", "utilidad_neta"], 2)
-        prod = int_round(prod, ["piezas"])
+    prod = money_round(prod, ["venta_sin_iva", "costo", "utilidad_neta"], 2)
+    prod = int_round(prod, ["piezas"])
 
-        top_pzas = prod.sort_values("piezas", ascending=False).head(1)
-        top_venta = prod.sort_values("venta_sin_iva", ascending=False).head(1)
-        top_util = prod.sort_values("utilidad_neta", ascending=False).head(1)
-        top_margen = prod.sort_values("margen_pct", ascending=False).head(1)
+    top_pzas = prod.sort_values("piezas", ascending=False).head(1)
+    top_venta = prod.sort_values("venta_sin_iva", ascending=False).head(1)
+    top_util = prod.sort_values("utilidad_neta", ascending=False).head(1)
+    top_margen = prod.sort_values("margen_pct", ascending=False).head(1)
 
-        cA, cB, cC, cD = st.columns(4)
-        cA.metric("Más vendido (pzas)", str(top_pzas.iloc[0]["articulo"]), f'{int(top_pzas.iloc[0]["piezas"]):,} pzas')
-        cB.metric("Mayor venta", str(top_venta.iloc[0]["articulo"]), f'${float(top_venta.iloc[0]["venta_sin_iva"]):,.2f}')
-        cC.metric("Mayor utilidad", str(top_util.iloc[0]["articulo"]), f'${float(top_util.iloc[0]["utilidad_neta"]):,.2f}')
-        cD.metric("Mejor margen %", str(top_margen.iloc[0]["articulo"]), f'{float(top_margen.iloc[0]["margen_pct"])*100:,.2f}%')
+    cA, cB, cC, cD = st.columns(4)
+    cA.metric("Más vendido (pzas)", str(top_pzas.iloc[0]["articulo"]), f'{int(top_pzas.iloc[0]["piezas"]):,} pzas')
+    cB.metric("Mayor venta", str(top_venta.iloc[0]["articulo"]), f'${float(top_venta.iloc[0]["venta_sin_iva"]):,.2f}')
+    cC.metric("Mayor utilidad", str(top_util.iloc[0]["articulo"]), f'${float(top_util.iloc[0]["utilidad_neta"]):,.2f}')
+    cD.metric("Mejor margen %", str(top_margen.iloc[0]["articulo"]), f'{float(top_margen.iloc[0]["margen_pct"])*100:,.2f}%')
 
-        st.divider()
-        t1, t2, t3 = st.tabs(["Top 20 por Venta", "Top 20 por Utilidad", "Top 20 por Piezas"])
+    st.divider()
+    t1, t2, t3, t4 = st.tabs(["Top 20 por Utilidad", "Top 20 por Venta", "Top 20 por Piezas", "Tabla completa"])
 
-        def show_table(data):
-            st.data_editor(
-                data,
-                hide_index=True,
-                disabled=True,
-                height=520,
-                column_config={
-                    "piezas": st.column_config.NumberColumn("Piezas", format="%,.0f"),
-                    "venta_sin_iva": st.column_config.NumberColumn("Venta sin IVA", format="$%,.2f"),
-                    "costo": st.column_config.NumberColumn("Costo", format="$%,.2f"),
-                    "utilidad_neta": st.column_config.NumberColumn("Utilidad neta", format="$%,.2f"),
-                    "margen_pct": st.column_config.NumberColumn("Margen %", format="%.2f%%"),
-                }
-            )
+    def show_table(data, h=560):
+        st.data_editor(
+            data,
+            hide_index=True,
+            disabled=True,
+            height=h,
+            column_config={
+                "piezas": st.column_config.NumberColumn("Piezas", format="%,.0f"),
+                "venta_sin_iva": st.column_config.NumberColumn("Venta sin IVA", format="$%,.2f"),
+                "costo": st.column_config.NumberColumn("Costo", format="$%,.2f"),
+                "utilidad_neta": st.column_config.NumberColumn("Utilidad neta", format="$%,.2f"),
+                "margen_pct": st.column_config.NumberColumn("Margen %", format="%.2f%%"),
+            }
+        )
 
-        with t1:
-            show_table(prod.sort_values("venta_sin_iva", ascending=False).head(20))
-        with t2:
-            show_table(prod.sort_values("utilidad_neta", ascending=False).head(20))
-        with t3:
-            show_table(prod.sort_values("piezas", ascending=False).head(20))
-
-        ver_tabla = st.checkbox("Mostrar tabla completa de artículos (solo si la necesito)", value=False)
-        if ver_tabla:
-            show_table(prod.sort_values("utilidad_neta", ascending=False))
+    with t1:
+        show_table(prod.sort_values("utilidad_neta", ascending=False).head(20))
+    with t2:
+        show_table(prod.sort_values("venta_sin_iva", ascending=False).head(20))
+    with t3:
+        show_table(prod.sort_values("piezas", ascending=False).head(20))
+    with t4:
+        show_table(prod.sort_values("utilidad_neta", ascending=False), h=650)
 
 # =========================
-# “MARGEN POR PROVEEDOR”
+# MARGEN POR PROVEEDOR
 # =========================
 st.divider()
 st.subheader("Margen por proveedor")
@@ -322,3 +322,4 @@ else:
 # REFRESH
 # =========================
 st.button("Actualizar ahora", on_click=st.cache_data.clear)
+st.caption("Dashboard protegido con contraseña")
