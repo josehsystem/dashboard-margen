@@ -3,11 +3,6 @@ import pandas as pd
 from urllib.parse import quote
 
 # =========================
-# CONFIG BÁSICA
-# =========================
-st.set_page_config(page_title="Margen Neto", layout="wide")
-
-# =========================
 # LOGIN SIMPLE (PASSWORD)
 # =========================
 def check_password():
@@ -20,9 +15,17 @@ def check_password():
         return True
 
     st.title("Acceso al Dashboard")
+    st.caption("Ingresa la contraseña para continuar")
+
     pw = st.text_input("Contraseña", type="password")
 
-    if st.button("Entrar"):
+    c1, c2 = st.columns([1, 5])
+    with c1:
+        entrar = st.button("Entrar")
+    with c2:
+        st.write("")
+
+    if entrar:
         if pw == PASSWORD:
             st.session_state.auth_ok = True
             st.rerun()
@@ -35,13 +38,15 @@ if not check_password():
     st.stop()
 
 # =========================
-# CONFIG DE DATOS
+# CONFIG (DESPUÉS DEL LOGIN)
 # =========================
+st.set_page_config(page_title="Margen Neto", layout="wide")
+
 SHEET_ID = "1UpYQT6ErO3Xj3xdZ36IYJPRR9uDRQw-eYui9B_Y-JwU"
-SHEET_NAME = "Hoja1"
+SHEET_NAME = "Hoja1"          # VENTAS
 
 SHEET_ID_COMPRAS = "17X31u6slmVg--HSiL0AahdRSObvtVM0Q_KDd72EH-Ro"
-SHEET_NAME_COMPRAS = "Hoja1"
+SHEET_NAME_COMPRAS = "Hoja1"  # COMPRAS
 
 # =========================
 # HELPERS
@@ -55,21 +60,34 @@ def money_round(df_, cols, nd=2):
             df_[c] = pd.to_numeric(df_[c], errors="coerce").fillna(0).round(nd)
     return df_
 
+def int_round(df_, cols):
+    for c in cols:
+        if c in df_.columns:
+            df_[c] = pd.to_numeric(df_[c], errors="coerce").fillna(0).round(0).astype(int)
+    return df_
+
 def ensure_col(df_, col, default=""):
     if col not in df_.columns:
         df_[col] = default
     return df_
+
+def safe_unique(df_, col):
+    if col not in df_.columns:
+        return []
+    return sorted([x for x in df_[col].dropna().unique().tolist() if str(x).strip() != ""])
 
 # =========================
 # LOADERS
 # =========================
 @st.cache_data(ttl=60)
 def load_ventas():
-    url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={quote(SHEET_NAME)}"
+    sheet = quote(SHEET_NAME)
+    url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet}"
     df = pd.read_csv(url)
     df.columns = df.columns.str.strip().str.lower()
 
     df = ensure_col(df, "especie", "")
+    df = ensure_col(df, "categoria", "")
     df = ensure_col(df, "articulo", "")
 
     df["fecha"] = pd.to_datetime(df.get("fecha"), errors="coerce", dayfirst=True)
@@ -79,68 +97,228 @@ def load_ventas():
 
     df["venta_sin_iva"] = df["cantidad"] * df["importe"]
     df["costo"] = df["cantidad"] * df["cos_rep"]
-    df["utilidad_neta"] = (df["venta_sin_iva"] - df["costo"]) * 0.93
+    df["utilidad_neta"] = (df["venta_sin_iva"] - df["costo"]) * 0.93  # -7%
 
-    return money_round(df, ["venta_sin_iva", "costo", "utilidad_neta"], 2)
+    df = money_round(df, ["venta_sin_iva", "costo", "utilidad_neta"], 2)
+    return df
 
 @st.cache_data(ttl=60)
 def load_compras():
-    url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID_COMPRAS}/gviz/tq?tqx=out:csv&sheet={quote(SHEET_NAME_COMPRAS)}"
+    sheet = quote(SHEET_NAME_COMPRAS)
+    url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID_COMPRAS}/gviz/tq?tqx=out:csv&sheet={sheet}"
     c = pd.read_csv(url)
     c.columns = c.columns.str.strip().str.lower()
+
+    c = ensure_col(c, "especie", "")
+    c = ensure_col(c, "categoria", "")
+    c = ensure_col(c, "articulo", "")
+    c = ensure_col(c, "proveedor", "")
 
     c["fecha"] = pd.to_datetime(c.get("fecha"), errors="coerce", dayfirst=True)
     c["cantidad"] = to_num(c.get("cantidad"))
     c["importe"] = to_num(c.get("importe"))
-    c["compras"] = c["cantidad"] * c["importe"]
 
-    return money_round(c, ["compras"], 2)
+    c["compras"] = c["cantidad"] * c["importe"]
+    c = money_round(c, ["compras"], 2)
+    return c
 
 df = load_ventas()
 dfc = load_compras()
 
 # =========================
-# HEADER + KPIs
+# HEADER + FILTRO FECHAS
 # =========================
 st.caption("Basado en información programa NEXT")
 st.title("Utilidad y Margen NETO")
 
-venta = df["venta_sin_iva"].sum()
-costo = df["costo"].sum()
-util = df["utilidad_neta"].sum()
-margen = util / venta if venta else 0
+df_fechas = df.dropna(subset=["fecha"])
+min_d = df_fechas["fecha"].min().date()
+max_d = df_fechas["fecha"].max().date()
 
-k1, k2, k3, k4 = st.columns(4)
+c1, c2, _ = st.columns([2, 2, 6])
+d_ini = c1.date_input("Desde", min_d, min_d, max_d)
+d_fin = c2.date_input("Hasta", max_d, min_d, max_d)
+
+df_f = df[(df["fecha"].dt.date >= d_ini) & (df["fecha"].dt.date <= d_fin)].copy()
+dfc_f = dfc[(dfc["fecha"].dt.date >= d_ini) & (dfc["fecha"].dt.date <= d_fin)].copy()
+
+# =========================
+# FILTROS (SIDEBAR)
+# =========================
+with st.sidebar:
+    st.subheader("Filtros")
+
+    especies = safe_unique(df_f, "especie")
+    especie_sel = st.selectbox("Especie", ["(Todas)"] + especies)
+
+    categorias = safe_unique(df_f, "categoria")
+    categoria_sel = st.selectbox("Categoría", ["(Todas)"] + categorias)
+
+if especie_sel != "(Todas)":
+    df_f = df_f[df_f["especie"] == especie_sel]
+    dfc_f = dfc_f[dfc_f["especie"] == especie_sel]
+
+if categoria_sel != "(Todas)":
+    df_f = df_f[df_f["categoria"] == categoria_sel]
+    dfc_f = dfc_f[dfc_f["categoria"] == categoria_sel]
+
+st.divider()
+
+# =========================
+# KPIs
+# =========================
+venta = float(df_f["venta_sin_iva"].sum())
+costo = float(df_f["costo"].sum())
+util = float(df_f["utilidad_neta"].sum())
+pzas = int(round(df_f["cantidad"].sum()))
+margen = util / venta if venta else 0
+compras = float(dfc_f["compras"].sum()) if "compras" in dfc_f.columns else 0.0
+
+k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric("Venta sin IVA", f"${venta:,.2f}")
 k2.metric("Costo", f"${costo:,.2f}")
 k3.metric("Utilidad neta (-7%)", f"${util:,.2f}")
 k4.metric("Margen neto %", f"{margen*100:,.2f}%")
+k5.metric("Piezas", f"{pzas:,}")
+
+b1, b2, b3, b4, b5 = st.columns(5)
+b2.metric("Compras", f"${compras:,.2f}")
 
 st.divider()
 
 # =========================
-# EXPLORADOR POR ESPECIE (ORDENADO POR UTILIDAD)
+# ABAJO: MURO DE ESPECIES (CLICK) + DRILL DOWN
 # =========================
+if "especie_click" not in st.session_state:
+    st.session_state.especie_click = None
+
 st.subheader("Explorador por ESPECIE (clic para ver detalle)")
 
-esp = (
-    df.groupby("especie", as_index=False)
+esp_cards = (
+    df_f.groupby("especie", as_index=False)
     .agg(
-        utilidad=("utilidad_neta", "sum"),
+        utilidad=("utilidad_neta", "sum"),   # ya con -7%
         venta=("venta_sin_iva", "sum"),
+        piezas=("cantidad", "sum"),
     )
 )
-esp["margen_pct"] = esp["utilidad"] / esp["venta"]
-esp = esp.sort_values("utilidad", ascending=False).reset_index(drop=True)
+esp_cards["margen_pct"] = (esp_cards["utilidad"] / esp_cards["venta"]).fillna(0)
+esp_cards = money_round(esp_cards, ["venta", "utilidad"], 2)
+esp_cards = int_round(esp_cards, ["piezas"])
+
+# ORDEN: por UTILIDAD (de mayor a menor) y RESETEO para orden visual correcto
+esp_cards = esp_cards.sort_values("utilidad", ascending=False).reset_index(drop=True)
 
 cols = st.columns(5)
-for i, r in esp.iterrows():
-    with cols[i % 5]:
-        st.button(
-            f"{r['especie']}\n\nMargen: {r['margen_pct']*100:,.2f}%\nUtilidad: ${r['utilidad']:,.0f}",
-            use_container_width=True,
-            key=f"esp_{i}"
+for pos, row in esp_cards.iterrows():
+    with cols[pos % 5]:
+        label = (
+            f"{row['especie']}\n\n"
+            f"Margen: {row['margen_pct']*100:,.2f}%  "
+            f"Utilidad: ${row['utilidad']:,.0f}"
         )
+        if st.button(label, use_container_width=True, key=f"esp_{pos}"):
+            st.session_state.especie_click = row["especie"]
 
+c_clear, _ = st.columns([2, 8])
+if c_clear.button("Limpiar selección", use_container_width=True):
+    st.session_state.especie_click = None
+
+if st.session_state.especie_click:
+    st.divider()
+    esp_sel = st.session_state.especie_click
+    st.subheader(f"Detalle de especie: {esp_sel}")
+
+    dfx = df_f[df_f["especie"] == esp_sel].copy()
+    if dfx.empty:
+        st.warning("No hay datos para esa especie con los filtros actuales.")
+    else:
+        prod = (
+            dfx.groupby("articulo", as_index=False)
+            .agg(
+                piezas=("cantidad", "sum"),
+                venta_sin_iva=("venta_sin_iva", "sum"),
+                costo=("costo", "sum"),
+                utilidad_neta=("utilidad_neta", "sum"),
+            )
+        )
+        prod["margen_pct"] = (prod["utilidad_neta"] / prod["venta_sin_iva"]).fillna(0)
+
+        prod = money_round(prod, ["venta_sin_iva", "costo", "utilidad_neta"], 2)
+        prod = int_round(prod, ["piezas"])
+
+        top_pzas = prod.sort_values("piezas", ascending=False).head(1)
+        top_venta = prod.sort_values("venta_sin_iva", ascending=False).head(1)
+        top_util = prod.sort_values("utilidad_neta", ascending=False).head(1)
+        top_margen = prod.sort_values("margen_pct", ascending=False).head(1)
+
+        cA, cB, cC, cD = st.columns(4)
+        cA.metric("Más vendido (pzas)", str(top_pzas.iloc[0]["articulo"]), f'{int(top_pzas.iloc[0]["piezas"]):,} pzas')
+        cB.metric("Mayor venta", str(top_venta.iloc[0]["articulo"]), f'${float(top_venta.iloc[0]["venta_sin_iva"]):,.2f}')
+        cC.metric("Mayor utilidad", str(top_util.iloc[0]["articulo"]), f'${float(top_util.iloc[0]["utilidad_neta"]):,.2f}')
+        cD.metric("Mejor margen %", str(top_margen.iloc[0]["articulo"]), f'{float(top_margen.iloc[0]["margen_pct"])*100:,.2f}%')
+
+        st.divider()
+        t1, t2, t3 = st.tabs(["Top 20 por Venta", "Top 20 por Utilidad", "Top 20 por Piezas"])
+
+        def show_table(data):
+            st.data_editor(
+                data,
+                hide_index=True,
+                disabled=True,
+                height=520,
+                column_config={
+                    "piezas": st.column_config.NumberColumn("Piezas", format="%,.0f"),
+                    "venta_sin_iva": st.column_config.NumberColumn("Venta sin IVA", format="$%,.2f"),
+                    "costo": st.column_config.NumberColumn("Costo", format="$%,.2f"),
+                    "utilidad_neta": st.column_config.NumberColumn("Utilidad neta", format="$%,.2f"),
+                    "margen_pct": st.column_config.NumberColumn("Margen %", format="%.2f%%"),
+                }
+            )
+
+        with t1:
+            show_table(prod.sort_values("venta_sin_iva", ascending=False).head(20))
+        with t2:
+            show_table(prod.sort_values("utilidad_neta", ascending=False).head(20))
+        with t3:
+            show_table(prod.sort_values("piezas", ascending=False).head(20))
+
+        ver_tabla = st.checkbox("Mostrar tabla completa de artículos (solo si la necesito)", value=False)
+        if ver_tabla:
+            show_table(prod.sort_values("utilidad_neta", ascending=False))
+
+# =========================
+# “MARGEN POR PROVEEDOR”
+# =========================
 st.divider()
-st.caption("Dashboard protegido con contraseña")
+st.subheader("Margen por proveedor")
+
+if "proveedor" not in dfc_f.columns or dfc_f["proveedor"].astype(str).str.strip().eq("").all():
+    st.info("Para ver esta sección, tu hoja de COMPRAS debe traer una columna llamada 'proveedor'.")
+else:
+    prov = (
+        dfc_f.groupby("proveedor", as_index=False)
+        .agg(
+            compras=("compras", "sum"),
+            cantidad=("cantidad", "sum")
+        )
+    )
+    prov = money_round(prov, ["compras"], 2)
+    prov = int_round(prov, ["cantidad"])
+    prov = prov.sort_values("compras", ascending=False).reset_index(drop=True)
+
+    st.data_editor(
+        prov,
+        hide_index=True,
+        disabled=True,
+        height=420,
+        column_config={
+            "compras": st.column_config.NumberColumn("Compras", format="$%,.2f"),
+            "cantidad": st.column_config.NumberColumn("Piezas compradas", format="%,.0f"),
+        }
+    )
+
+# =========================
+# REFRESH
+# =========================
+st.button("Actualizar ahora", on_click=st.cache_data.clear)
