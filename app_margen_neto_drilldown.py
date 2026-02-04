@@ -75,6 +75,14 @@ def safe_unique(df_, col):
 def fmt_money0(x):
     return f"${float(x):,.0f}"
 
+def clean_text_series(s: pd.Series) -> pd.Series:
+    return s.astype(str).fillna("").str.strip()
+
+def nunique_clean(s: pd.Series) -> int:
+    x = clean_text_series(s)
+    x = x.replace("", pd.NA).dropna()
+    return int(x.nunique())
+
 # =========================
 # LOADERS
 # =========================
@@ -90,8 +98,8 @@ def load_ventas():
     df = ensure_col(df, "especie", "")
     df = ensure_col(df, "categoria", "")
     df = ensure_col(df, "articulo", "")
-    df = ensure_col(df, "vendedor", "")   # <- CLAVE para esta vista
-    df = ensure_col(df, "cliente", "")    # <- si no existe, se queda vacío
+    df = ensure_col(df, "vendedor", "")
+    df = ensure_col(df, "cliente", "")  # <- confirmado
 
     df["fecha"] = pd.to_datetime(df.get("fecha"), errors="coerce", dayfirst=True)
     df["cantidad"] = to_num(df.get("cantidad"))
@@ -102,6 +110,7 @@ def load_ventas():
     df["costo"] = df["cantidad"] * df["cos_rep"]
     df["utilidad_neta"] = (df["venta_sin_iva"] - df["costo"]) * 0.93  # -7%
 
+    # redondeo SOLO visual
     df = money_round(df, ["venta_sin_iva", "costo", "utilidad_neta"], 2)
     return df
 
@@ -196,8 +205,8 @@ if st.session_state.view == "menu":
         st.markdown("</div>", unsafe_allow_html=True)
 
     st.divider()
-    st.caption("Dashboard protegido con contraseña")
     st.button("Actualizar ahora", on_click=st.cache_data.clear)
+    st.caption("Dashboard protegido con contraseña")
     st.stop()
 
 # =========================
@@ -262,24 +271,18 @@ if st.session_state.view == "ventas":
     st.divider()
     st.subheader("Vendedores (ordenados por venta)")
 
-    # Agrupar por vendedor
-    df_f["vendedor"] = df_f["vendedor"].astype(str).fillna("").str.strip()
-    dffv = df_f[df_f["vendedor"] != ""].copy()
+    df_f["vendedor"] = clean_text_series(df_f["vendedor"])
+    df_f["cliente"] = clean_text_series(df_f["cliente"])
 
+    dffv = df_f[df_f["vendedor"] != ""].copy()
     if dffv.empty:
         st.info("No veo datos en la columna 'vendedor' (o viene vacía).")
         st.stop()
 
-    # clientes distintos (si no hay cliente, queda 0 y avisamos)
-    has_cliente = "cliente" in dffv.columns and not dffv["cliente"].astype(str).str.strip().eq("").all()
-    if not has_cliente:
-        st.markdown('<div class="muted">Nota: No encontré columna "cliente" con valores. El # clientes se mostrará como 0 hasta que exista.</div>', unsafe_allow_html=True)
-        dffv["cliente"] = ""
-
     vend = (
         dffv.groupby("vendedor", as_index=False)
         .agg(
-            clientes=("cliente", lambda s: int(pd.Series(s).astype(str).str.strip().replace("", pd.NA).dropna().nunique())),
+            clientes=("cliente", nunique_clean),
             venta=("venta_sin_iva", "sum"),
             utilidad=("utilidad_neta", "sum"),
             piezas=("cantidad", "sum"),
@@ -290,7 +293,6 @@ if st.session_state.view == "ventas":
     vend = money_round(vend, ["venta", "utilidad"], 2)
     vend = int_round(vend, ["piezas", "clientes"])
 
-    # Tarjetas
     cols = st.columns(5)
     for i, row in vend.iterrows():
         with cols[i % 5]:
@@ -318,5 +320,5 @@ if st.session_state.view == "ventas_proveedor":
         st.rerun()
 
     st.title("VENTAS POR PROVEEDOR")
-    st.info("En construcción: aquí vamos a cruzar VENTAS vs COMPRAS por proveedor (vendido, comprado y utilidad).")
+    st.info("Siguiente paso: cruzar VENTAS vs COMPRAS por proveedor (vendido, comprado y utilidad).")
     st.stop()
