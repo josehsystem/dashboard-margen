@@ -5,7 +5,7 @@ from urllib.parse import quote
 # =========================
 # CONFIG (DEBE IR PRIMERO)
 # =========================
-st.set_page_config(page_title="Margen Neto", layout="wide")
+st.set_page_config(page_title="Panel Director", layout="wide")
 
 # =========================
 # LOGIN SIMPLE (PASSWORD)
@@ -19,7 +19,7 @@ def check_password():
     if st.session_state.auth_ok:
         return True
 
-    st.title("Acceso al Dashboard")
+    st.title("Acceso al Panel")
     st.caption("Ingresa la contraseña para continuar")
 
     pw = st.text_input("Contraseña", type="password")
@@ -85,9 +85,13 @@ def load_ventas():
     df = pd.read_csv(url)
     df.columns = df.columns.str.strip().str.lower()
 
+    # columnas esperadas / opcionales
+    df = ensure_col(df, "fecha", None)
     df = ensure_col(df, "especie", "")
     df = ensure_col(df, "categoria", "")
     df = ensure_col(df, "articulo", "")
+    df = ensure_col(df, "vendedor", "")   # <- CLAVE para esta vista
+    df = ensure_col(df, "cliente", "")    # <- si no existe, se queda vacío
 
     df["fecha"] = pd.to_datetime(df.get("fecha"), errors="coerce", dayfirst=True)
     df["cantidad"] = to_num(df.get("cantidad"))
@@ -98,7 +102,6 @@ def load_ventas():
     df["costo"] = df["cantidad"] * df["cos_rep"]
     df["utilidad_neta"] = (df["venta_sin_iva"] - df["costo"]) * 0.93  # -7%
 
-    # redondeo SOLO para mostrar
     df = money_round(df, ["venta_sin_iva", "costo", "utilidad_neta"], 2)
     return df
 
@@ -109,6 +112,7 @@ def load_compras():
     c = pd.read_csv(url)
     c.columns = c.columns.str.strip().str.lower()
 
+    c = ensure_col(c, "fecha", None)
     c = ensure_col(c, "especie", "")
     c = ensure_col(c, "categoria", "")
     c = ensure_col(c, "articulo", "")
@@ -126,280 +130,193 @@ df = load_ventas()
 dfc = load_compras()
 
 # =========================
-# HEADER + FILTRO FECHAS
+# NAVEGACIÓN (MENÚ / VISTAS)
 # =========================
-st.caption("Basado en información programa NEXT")
-st.title("Utilidad y Margen NETO")
+if "view" not in st.session_state:
+    st.session_state.view = "menu"
 
-df_fechas = df.dropna(subset=["fecha"])
-if df_fechas.empty:
-    st.error("No hay fechas válidas en VENTAS (columna 'fecha').")
-    st.stop()
-
-min_d = df_fechas["fecha"].min().date()
-max_d = df_fechas["fecha"].max().date()
-
-c1, c2, _ = st.columns([2, 2, 6])
-d_ini = c1.date_input("Desde", min_d, min_d, max_d)
-d_fin = c2.date_input("Hasta", max_d, min_d, max_d)
-
-df_f = df[(df["fecha"].dt.date >= d_ini) & (df["fecha"].dt.date <= d_fin)].copy()
-dfc_f = dfc[(dfc["fecha"].dt.date >= d_ini) & (dfc["fecha"].dt.date <= d_fin)].copy()
+def go(view_name: str):
+    st.session_state.view = view_name
+    st.rerun()
 
 # =========================
-# FILTROS (SIDEBAR)
+# ESTILOS TARJETAS (BOTONES)
 # =========================
-with st.sidebar:
-    st.subheader("Filtros")
-    especies = safe_unique(df_f, "especie")
-    especie_sel = st.selectbox("Especie", ["(Todas)"] + especies)
-
-    categorias = safe_unique(df_f, "categoria")
-    categoria_sel = st.selectbox("Categoría", ["(Todas)"] + categorias)
-
-if especie_sel != "(Todas)":
-    df_f = df_f[df_f["especie"] == especie_sel]
-    dfc_f = dfc_f[dfc_f["especie"] == especie_sel]
-
-if categoria_sel != "(Todas)":
-    df_f = df_f[df_f["categoria"] == categoria_sel]
-    dfc_f = dfc_f[dfc_f["categoria"] == categoria_sel]
-
-st.divider()
-
-# =========================
-# KPIs
-# =========================
-venta = float(df_f["venta_sin_iva"].sum())
-costo = float(df_f["costo"].sum())
-util = float(df_f["utilidad_neta"].sum())
-pzas = int(round(df_f["cantidad"].sum()))
-margen = util / venta if venta else 0
-compras = float(dfc_f["compras"].sum()) if "compras" in dfc_f.columns else 0.0
-
-k1, k2, k3, k4, k5 = st.columns(5)
-k1.metric("Venta sin IVA", f"${venta:,.2f}")
-k2.metric("Costo", f"${costo:,.2f}")
-k3.metric("Utilidad neta (-7%)", f"${util:,.2f}")
-k4.metric("Margen neto %", f"{margen*100:,.2f}%")
-k5.metric("Piezas", f"{pzas:,}")
-
-b1, b2, b3, b4, b5 = st.columns(5)
-b2.metric("Compras", f"${compras:,.2f}")
-
-st.divider()
-
-# =========================
-# EXPLORADOR POR ESPECIE + PARETO 80/20 REAL
-# =========================
-if "especie_click" not in st.session_state:
-    st.session_state.especie_click = None
-
-st.subheader("Explorador por ESPECIE (Pareto 80/20 por UTILIDAD)")
-
-# AGRUPACIÓN SIN REDONDEAR PARA PARETO (tomamos de df_f ya calculado, pero sin volver a redondear)
-esp = (
-    df_f.groupby("especie", as_index=False)
-    .agg(
-        utilidad=("utilidad_neta", "sum"),
-        venta=("venta_sin_iva", "sum"),
-        piezas=("cantidad", "sum"),
-    )
-)
-
-# margen
-esp["margen_pct"] = (esp["utilidad"] / esp["venta"]).fillna(0)
-
-# PARETO: SOLO UTILIDAD POSITIVA
-esp = esp[esp["utilidad"] > 0].copy()
-esp = esp.sort_values("utilidad", ascending=False).reset_index(drop=True)
-
-total_util = float(esp["utilidad"].sum())
-
-if total_util > 0:
-    esp["utilidad_acum"] = esp["utilidad"].cumsum()
-    esp["pct_acum"] = esp["utilidad_acum"] / total_util
-
-    esp["top_80"] = esp["pct_acum"] <= 0.80
-
-    # incluye la "bisagra" que cruza el 80%
-    idx_cruce = esp[esp["pct_acum"] > 0.80].index.min()
-    if pd.notna(idx_cruce):
-        esp.loc[idx_cruce, "top_80"] = True
-else:
-    esp["utilidad_acum"] = 0
-    esp["pct_acum"] = 0
-    esp["top_80"] = False
-
-top80_count = int(esp["top_80"].sum())
-top80_util = float(esp.loc[esp["top_80"], "utilidad"].sum()) if total_util > 0 else 0.0
-top80_pct = (top80_util / total_util) if total_util > 0 else 0.0
-
-cpareto1, cpareto2, cpareto3 = st.columns([2, 2, 6])
-cpareto1.metric("Especies TOP", f"{top80_count}")
-cpareto2.metric("Utilidad cubierta", f"{top80_pct*100:,.2f}%")
-cpareto3.caption("VERDE = especies que construyen ≥80% REAL de la utilidad neta (-7%). (Solo utilidad positiva)")
-
-# FORMATO VISUAL DESPUÉS
-esp = money_round(esp, ["venta", "utilidad", "utilidad_acum"], 2)
-esp = int_round(esp, ["piezas"])
-
-# CSS
 st.markdown(
     """
     <style>
-      .cardwrap button {
-        width: 100% !important;
-        border-radius: 14px !important;
-        padding: 18px 14px !important;
-        border: 1px solid rgba(255,255,255,0.12) !important;
+      .cardwrap button{
+        width:100% !important;
+        border-radius:18px !important;
+        padding:18px 16px !important;
+        border:1px solid rgba(255,255,255,0.14) !important;
         background: rgba(255,255,255,0.04) !important;
         color: white !important;
-        text-align: center !important;
         white-space: pre-line !important;
-        line-height: 1.25 !important;
+        text-align: left !important;
+        line-height: 1.15 !important;
       }
-      .cardwrap button:hover {
-        border-color: rgba(255,255,255,0.22) !important;
+      .cardwrap button:hover{
+        border-color: rgba(255,255,255,0.24) !important;
         transform: translateY(-1px) !important;
       }
-      .top80wrap button{
-        background: rgba(46, 204, 113, 0.24) !important;
-        border: 1px solid rgba(46,204,113,0.90) !important;
+      .menuwrap button{
+        text-align:center !important;
+        font-size: 18px !important;
+        padding:24px 18px !important;
       }
-      .top80wrap button:hover{
-        border: 1px solid rgba(46,204,113,0.98) !important;
+      .muted {
+        color: rgba(255,255,255,0.65);
+        font-size: 12px;
       }
     </style>
     """,
     unsafe_allow_html=True
 )
 
-cols = st.columns(5)
-for i, row in esp.iterrows():
-    with cols[i % 5]:
-        label = (
-            f"{row['especie']}\n\n"
-            f"Margen: {row['margen_pct']*100:,.2f}%\n"
-            f"Utilidad: {fmt_money0(row['utilidad'])}"
-        )
-
-        if bool(row["top_80"]):
-            st.markdown('<div class="cardwrap top80wrap">', unsafe_allow_html=True)
-            if st.button(label, key=f"esp_{i}", use_container_width=True):
-                st.session_state.especie_click = row["especie"]
-            st.markdown("</div>", unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="cardwrap">', unsafe_allow_html=True)
-            if st.button(label, key=f"esp_{i}", use_container_width=True):
-                st.session_state.especie_click = row["especie"]
-            st.markdown("</div>", unsafe_allow_html=True)
-
-c_clear, _ = st.columns([2, 8])
-if c_clear.button("Limpiar selección", use_container_width=True):
-    st.session_state.especie_click = None
-
 # =========================
-# DETALLE POR ESPECIE (PRODUCTOS) - SIN RECARGA
+# VISTA: MENÚ
 # =========================
-esp_sel = st.session_state.especie_click
+if st.session_state.view == "menu":
+    st.title("Panel Director")
+    st.caption("Selecciona un módulo")
 
-if esp_sel and (("especie" not in df_f.columns) or (esp_sel not in df_f["especie"].astype(str).unique())):
-    st.session_state.especie_click = None
-    esp_sel = None
+    c1, c2, c3 = st.columns([2, 2, 6])
 
-if esp_sel:
+    with c1:
+        st.markdown('<div class="cardwrap menuwrap">', unsafe_allow_html=True)
+        if st.button("VENTAS", use_container_width=True):
+            go("ventas")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with c2:
+        st.markdown('<div class="cardwrap menuwrap">', unsafe_allow_html=True)
+        if st.button("VENTAS POR PROVEEDOR", use_container_width=True):
+            go("ventas_proveedor")
+        st.markdown("</div>", unsafe_allow_html=True)
+
     st.divider()
-    st.subheader(f"Detalle de especie: {esp_sel}")
+    st.caption("Dashboard protegido con contraseña")
+    st.button("Actualizar ahora", on_click=st.cache_data.clear)
+    st.stop()
 
-    dfx = df_f[df_f["especie"].astype(str) == str(esp_sel)].copy()
+# =========================
+# VISTA: VENTAS
+# =========================
+if st.session_state.view == "ventas":
+    topbar1, topbar2, _ = st.columns([2, 2, 8])
+    if topbar1.button("⬅️ Regresar al menú", use_container_width=True):
+        go("menu")
+    if topbar2.button("Actualizar ahora", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
 
-    prod = (
-        dfx.groupby("articulo", as_index=False)
+    st.caption("Basado en información programa NEXT")
+    st.title("VENTAS")
+
+    # Fechas
+    df_fechas = df.dropna(subset=["fecha"])
+    if df_fechas.empty:
+        st.error("No hay fechas válidas en VENTAS (columna 'fecha').")
+        st.stop()
+
+    min_d = df_fechas["fecha"].min().date()
+    max_d = df_fechas["fecha"].max().date()
+
+    f1, f2, _ = st.columns([2, 2, 6])
+    d_ini = f1.date_input("Desde", min_d, min_d, max_d)
+    d_fin = f2.date_input("Hasta", max_d, min_d, max_d)
+
+    df_f = df[(df["fecha"].dt.date >= d_ini) & (df["fecha"].dt.date <= d_fin)].copy()
+
+    # Sidebar filtros (opcionales)
+    with st.sidebar:
+        st.subheader("Filtros")
+        especies = safe_unique(df_f, "especie")
+        especie_sel = st.selectbox("Especie", ["(Todas)"] + especies)
+
+        categorias = safe_unique(df_f, "categoria")
+        categoria_sel = st.selectbox("Categoría", ["(Todas)"] + categorias)
+
+    if especie_sel != "(Todas)":
+        df_f = df_f[df_f["especie"] == especie_sel]
+    if categoria_sel != "(Todas)":
+        df_f = df_f[df_f["categoria"] == categoria_sel]
+
+    st.divider()
+
+    # KPIs
+    venta = float(df_f["venta_sin_iva"].sum())
+    costo = float(df_f["costo"].sum())
+    util = float(df_f["utilidad_neta"].sum())
+    pzas = int(round(df_f["cantidad"].sum()))
+    margen = util / venta if venta else 0
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Venta sin IVA", f"${venta:,.2f}")
+    k2.metric("Costo", f"${costo:,.2f}")
+    k3.metric("Utilidad neta (-7%)", f"${util:,.2f}")
+    k4.metric("Margen neto %", f"{margen*100:,.2f}%")
+    k5.metric("Piezas", f"{pzas:,}")
+
+    st.divider()
+    st.subheader("Vendedores (ordenados por venta)")
+
+    # Agrupar por vendedor
+    df_f["vendedor"] = df_f["vendedor"].astype(str).fillna("").str.strip()
+    dffv = df_f[df_f["vendedor"] != ""].copy()
+
+    if dffv.empty:
+        st.info("No veo datos en la columna 'vendedor' (o viene vacía).")
+        st.stop()
+
+    # clientes distintos (si no hay cliente, queda 0 y avisamos)
+    has_cliente = "cliente" in dffv.columns and not dffv["cliente"].astype(str).str.strip().eq("").all()
+    if not has_cliente:
+        st.markdown('<div class="muted">Nota: No encontré columna "cliente" con valores. El # clientes se mostrará como 0 hasta que exista.</div>', unsafe_allow_html=True)
+        dffv["cliente"] = ""
+
+    vend = (
+        dffv.groupby("vendedor", as_index=False)
         .agg(
+            clientes=("cliente", lambda s: int(pd.Series(s).astype(str).str.strip().replace("", pd.NA).dropna().nunique())),
+            venta=("venta_sin_iva", "sum"),
+            utilidad=("utilidad_neta", "sum"),
             piezas=("cantidad", "sum"),
-            venta_sin_iva=("venta_sin_iva", "sum"),
-            costo=("costo", "sum"),
-            utilidad_neta=("utilidad_neta", "sum"),
         )
     )
-    prod["margen_pct"] = (prod["utilidad_neta"] / prod["venta_sin_iva"]).fillna(0)
 
-    prod = money_round(prod, ["venta_sin_iva", "costo", "utilidad_neta"], 2)
-    prod = int_round(prod, ["piezas"])
+    vend = vend.sort_values("venta", ascending=False).reset_index(drop=True)
+    vend = money_round(vend, ["venta", "utilidad"], 2)
+    vend = int_round(vend, ["piezas", "clientes"])
 
-    if not prod.empty:
-        top_pzas = prod.sort_values("piezas", ascending=False).head(1)
-        top_venta = prod.sort_values("venta_sin_iva", ascending=False).head(1)
-        top_util = prod.sort_values("utilidad_neta", ascending=False).head(1)
-        top_margen = prod.sort_values("margen_pct", ascending=False).head(1)
+    # Tarjetas
+    cols = st.columns(5)
+    for i, row in vend.iterrows():
+        with cols[i % 5]:
+            label = (
+                f"{row['vendedor']}\n\n"
+                f"Clientes: {int(row['clientes']):,}\n"
+                f"Venta: {fmt_money0(row['venta'])}\n"
+                f"Utilidad: {fmt_money0(row['utilidad'])}"
+            )
+            st.markdown('<div class="cardwrap">', unsafe_allow_html=True)
+            st.button(label, key=f"vend_{i}", use_container_width=True, disabled=True)
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        cA, cB, cC, cD = st.columns(4)
-        cA.metric("Más vendido (pzas)", str(top_pzas.iloc[0]["articulo"]), f'{int(top_pzas.iloc[0]["piezas"]):,} pzas')
-        cB.metric("Mayor venta", str(top_venta.iloc[0]["articulo"]), f'${float(top_venta.iloc[0]["venta_sin_iva"]):,.2f}')
-        cC.metric("Mayor utilidad", str(top_util.iloc[0]["articulo"]), f'${float(top_util.iloc[0]["utilidad_neta"]):,.2f}')
-        cD.metric("Mejor margen %", str(top_margen.iloc[0]["articulo"]), f'{float(top_margen.iloc[0]["margen_pct"])*100:,.2f}%')
-
-    st.divider()
-    t1, t2, t3, t4 = st.tabs(["Top 20 por Utilidad", "Top 20 por Venta", "Top 20 por Piezas", "Tabla completa"])
-
-    def show_table(data, h=560):
-        st.data_editor(
-            data,
-            hide_index=True,
-            disabled=True,
-            height=h,
-            column_config={
-                "piezas": st.column_config.NumberColumn("Piezas", format="%,.0f"),
-                "venta_sin_iva": st.column_config.NumberColumn("Venta sin IVA", format="$%,.2f"),
-                "costo": st.column_config.NumberColumn("Costo", format="$%,.2f"),
-                "utilidad_neta": st.column_config.NumberColumn("Utilidad neta", format="$%,.2f"),
-                "margen_pct": st.column_config.NumberColumn("Margen %", format="%.2f%%"),
-            }
-        )
-
-    with t1:
-        show_table(prod.sort_values("utilidad_neta", ascending=False).head(20))
-    with t2:
-        show_table(prod.sort_values("venta_sin_iva", ascending=False).head(20))
-    with t3:
-        show_table(prod.sort_values("piezas", ascending=False).head(20))
-    with t4:
-        show_table(prod.sort_values("utilidad_neta", ascending=False), h=650)
+    st.stop()
 
 # =========================
-# MARGEN POR PROVEEDOR
+# VISTA: VENTAS POR PROVEEDOR (SIGUIENTE PASO)
 # =========================
-st.divider()
-st.subheader("Margen por proveedor")
+if st.session_state.view == "ventas_proveedor":
+    topbar1, topbar2, _ = st.columns([2, 2, 8])
+    if topbar1.button("⬅️ Regresar al menú", use_container_width=True):
+        go("menu")
+    if topbar2.button("Actualizar ahora", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
 
-if "proveedor" not in dfc_f.columns or dfc_f["proveedor"].astype(str).str.strip().eq("").all():
-    st.info("Para ver esta sección, tu hoja de COMPRAS debe traer una columna llamada 'proveedor'.")
-else:
-    prov = (
-        dfc_f.groupby("proveedor", as_index=False)
-        .agg(
-            compras=("compras", "sum"),
-            cantidad=("cantidad", "sum")
-        )
-    )
-    prov = money_round(prov, ["compras"], 2)
-    prov = int_round(prov, ["cantidad"])
-    prov = prov.sort_values("compras", ascending=False).reset_index(drop=True)
-
-    st.data_editor(
-        prov,
-        hide_index=True,
-        disabled=True,
-        height=420,
-        column_config={
-            "compras": st.column_config.NumberColumn("Compras", format="$%,.2f"),
-            "cantidad": st.column_config.NumberColumn("Piezas compradas", format="%,.0f"),
-        }
-    )
-
-# =========================
-# REFRESH
-# =========================
-st.button("Actualizar ahora", on_click=st.cache_data.clear)
-st.caption("Dashboard protegido con contraseña")
+    st.title("VENTAS POR PROVEEDOR")
+    st.info("En construcción: aquí vamos a cruzar VENTAS vs COMPRAS por proveedor (vendido, comprado y utilidad).")
+    st.stop()
