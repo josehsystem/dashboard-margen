@@ -45,9 +45,9 @@ SHEET_NAME = "Hoja1"          # VENTAS
 SHEET_ID_COMPRAS = "17X31u6slmVg--HSiL0AahdRSObvtVM0Q_KDd72EH-Ro"
 SHEET_NAME_COMPRAS = "Hoja1"  # COMPRAS
 
-# NEGOCIADO (EN EL MISMO SHEET DE VENTAS, TAB FALTANTE SEGÚN TU CAPTURA)
+# NEGOCIADO (TAB FALTANTE)
 SHEET_ID_NEGOCIADO = SHEET_ID
-SHEET_NAME_NEGOCIADO = "FALTANTE"  # <- Tab donde está cve_art y (expression)
+SHEET_NAME_NEGOCIADO = "FALTANTE"
 
 # =========================
 # HELPERS
@@ -74,16 +74,16 @@ def safe_unique(df_, col):
 def fmt_money0(x):
     return f"${float(x):,.0f}"
 
+def clean_cols(df: pd.DataFrame) -> pd.DataFrame:
+    df.columns = df.columns.astype(str).str.strip().str.lower()
+    return df
+
 def clean_text_series(s: pd.Series) -> pd.Series:
     return s.astype(str).fillna("").str.strip()
 
 def nunique_clean(s: pd.Series) -> int:
     x = clean_text_series(s).replace("", pd.NA).dropna()
     return int(x.nunique())
-
-def clean_cols(df: pd.DataFrame) -> pd.DataFrame:
-    df.columns = df.columns.astype(str).str.strip().str.lower()
-    return df
 
 def gsheet_csv(sheet_id: str, sheet_name: str) -> str:
     sheet = quote(sheet_name)
@@ -93,6 +93,19 @@ def first_nonempty(series: pd.Series) -> str:
     x = series.dropna().astype(str).str.strip()
     x = x[x != ""]
     return x.iloc[0] if len(x) else ""
+
+def pick_code_col(df_: pd.DataFrame, candidates: list[str]) -> str:
+    """Devuelve el primer nombre de columna existente con datos."""
+    for c in candidates:
+        if c in df_.columns:
+            s = clean_text_series(df_[c])
+            if not s.eq("").all():
+                return c
+    # si existen pero vacías, regresa la primera existente
+    for c in candidates:
+        if c in df_.columns:
+            return c
+    return ""
 
 # =========================
 # LOADERS
@@ -109,7 +122,10 @@ def load_ventas():
     df = ensure_col(df, "articulo", "")
     df = ensure_col(df, "vendedor", "")
     df = ensure_col(df, "cliente", "")
-    df = ensure_col(df, "cve_art", "")  # <- si existe, mejor para cruces
+
+    # en tu captura el código viene como "clave"
+    df = ensure_col(df, "clave", "")
+    df = ensure_col(df, "cve_art", "")  # por si algún día lo agregas
 
     df["fecha"] = pd.to_datetime(df.get("fecha"), errors="coerce", dayfirst=True)
 
@@ -122,14 +138,9 @@ def load_ventas():
     df["utilidad_neta"] = (df["venta_sin_iva"] - df["costo"]) * 0.93  # -7%
 
     # normalizaciones texto
-    df["especie"] = clean_text_series(df["especie"])
-    df["categoria"] = clean_text_series(df["categoria"])
-    df["articulo"] = clean_text_series(df["articulo"])
-    df["vendedor"] = clean_text_series(df["vendedor"])
-    df["cliente"] = clean_text_series(df["cliente"])
-    df["cve_art"] = clean_text_series(df["cve_art"])
+    for col in ["especie", "categoria", "articulo", "vendedor", "cliente", "clave", "cve_art"]:
+        df[col] = clean_text_series(df[col])
 
-    # redondeo SOLO visual
     df = money_round(df, ["venta_sin_iva", "costo", "utilidad_neta"], 2)
     return df
 
@@ -144,7 +155,10 @@ def load_compras():
     c = ensure_col(c, "categoria", "")
     c = ensure_col(c, "articulo", "")
     c = ensure_col(c, "proveedor", "")
-    c = ensure_col(c, "cve_art", "")  # <- si existe, lo usamos
+
+    # código: preferimos cve_art, pero aceptamos clave
+    c = ensure_col(c, "cve_art", "")
+    c = ensure_col(c, "clave", "")
 
     c["fecha"] = pd.to_datetime(c.get("fecha"), errors="coerce", dayfirst=True)
     c["cantidad"] = to_num(c.get("cantidad"))
@@ -152,12 +166,8 @@ def load_compras():
 
     c["compras"] = c["cantidad"] * c["importe"]
 
-    # normalizaciones texto
-    c["especie"] = clean_text_series(c["especie"])
-    c["categoria"] = clean_text_series(c["categoria"])
-    c["articulo"] = clean_text_series(c["articulo"])
-    c["proveedor"] = clean_text_series(c["proveedor"])
-    c["cve_art"] = clean_text_series(c["cve_art"])
+    for col in ["especie", "categoria", "articulo", "proveedor", "cve_art", "clave"]:
+        c[col] = clean_text_series(c[col])
 
     c = money_round(c, ["compras"], 2)
     return c
@@ -168,13 +178,16 @@ def load_negociado():
     n = pd.read_csv(url)
     n = clean_cols(n)
 
-    # en tu screenshot: folio, cve_art, (expression), cve_alm
+    # en tu captura: cve_art y (expression)
     n = ensure_col(n, "cve_art", "")
-    n = ensure_col(n, "(expression)", 0)  # <- viene así literal en tu captura
+    n = ensure_col(n, "clave", "")
+    n = ensure_col(n, "(expression)", 0)
 
     n["cve_art"] = clean_text_series(n["cve_art"])
-    n["negociado"] = to_num(n["(expression)"])  # cantidad negociada (lo que “se negó”)
-    return n[["cve_art", "negociado"]].copy()
+    n["clave"] = clean_text_series(n["clave"])
+    n["negociado"] = to_num(n["(expression)"])
+
+    return n[["cve_art", "clave", "negociado"]].copy()
 
 df = load_ventas()
 dfc = load_compras()
@@ -215,7 +228,7 @@ st.markdown(
         padding: 14px 14px;
         border: 1px solid rgba(255,255,255,0.14);
         background: rgba(255,255,255,0.04);
-        min-height: 104px;
+        min-height: 110px;
       }
       .hcard.top80{
         background: rgba(46,204,113,0.22);
@@ -298,7 +311,6 @@ if st.session_state.view == "ventas":
         st.subheader("Filtros (ventas)")
         especies = safe_unique(df_f, "especie")
         especie_sel = st.selectbox("Especie", ["(Todas)"] + especies, key="v_esp")
-
         categorias = safe_unique(df_f, "categoria")
         categoria_sel = st.selectbox("Categoría", ["(Todas)"] + categorias, key="v_cat")
 
@@ -356,7 +368,7 @@ if st.session_state.view == "ventas":
     st.stop()
 
 # =========================
-# VISTA: VENTAS POR PROVEEDOR (ESPECIES + VENDIDO/UTILIDAD + COMPRADO + NEGOCIADO + PARETO VERDE)
+# VISTA: VENTAS POR PROVEEDOR (ESPECIE + VENDIDO/UTILIDAD + COMPRADO + NEGOCIADO + PARETO VERDE)
 # =========================
 if st.session_state.view == "ventas_proveedor":
     topbar1, topbar2, _ = st.columns([2, 2, 8])
@@ -368,9 +380,8 @@ if st.session_state.view == "ventas_proveedor":
 
     st.caption("Basado en información programa NEXT")
     st.title("VENTAS POR PROVEEDOR")
-    st.markdown('<div class="muted">Vista por ESPECIE: vendido/utilidad + comprado (COMPRAS) + negociado (FALTANTE), con Pareto 80/20 en verde.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="muted">Cruce por código: VENTAS usa "clave", COMPRAS/FALTANTE usan "cve_art".</div>', unsafe_allow_html=True)
 
-    # Fechas (ventas + compras en mismo rango)
     df_fechas = df.dropna(subset=["fecha"])
     if df_fechas.empty:
         st.error("No hay fechas válidas en VENTAS (columna 'fecha').")
@@ -397,25 +408,26 @@ if st.session_state.view == "ventas_proveedor":
 
     st.divider()
 
-    # =========================
-    # 1) MAPPING cve_art -> especie (VALIDADO CONTRA VENTAS)
-    # =========================
-    # Si no hay cve_art en ventas, NO podemos validar el cruce y lo avisamos.
-    if df_f["cve_art"].astype(str).str.strip().eq("").all():
-        st.error("No veo columna 'cve_art' con datos en VENTAS. Para cruzar COMPRAS/FALTANTE a ESPECIE por código, VENTAS debe traer cve_art.")
+    # ========= 1) mapping CODIGO -> ESPECIE usando ventas =========
+    venta_code_col = pick_code_col(df_f, ["clave", "cve_art"])
+    if not venta_code_col:
+        st.error("No encuentro columna de código en VENTAS. Debe existir 'clave' (o 'cve_art').")
         st.stop()
 
     map_ce = (
-        df_f[df_f["cve_art"].astype(str).str.strip() != ""]
-        .groupby("cve_art", as_index=False)
+        df_f[clean_text_series(df_f[venta_code_col]) != ""]
+        .groupby(venta_code_col, as_index=False)
         .agg(especie=("especie", first_nonempty))
     )
-    map_ce["cve_art"] = clean_text_series(map_ce["cve_art"])
+    map_ce.rename(columns={venta_code_col: "codigo"}, inplace=True)
+    map_ce["codigo"] = clean_text_series(map_ce["codigo"])
     map_ce["especie"] = clean_text_series(map_ce["especie"])
 
-    # =========================
-    # 2) VENDIDO/UTILIDAD por ESPECIE (desde VENTAS)
-    # =========================
+    if map_ce["codigo"].eq("").all():
+        st.error("La columna de código en VENTAS existe pero viene vacía.")
+        st.stop()
+
+    # ========= 2) vendido/utilidad por especie =========
     esp = (
         df_f.groupby("especie", as_index=False)
         .agg(
@@ -425,68 +437,64 @@ if st.session_state.view == "ventas_proveedor":
         )
     )
     esp["margen_pct"] = (esp["utilidad"] / esp["vendido"]).fillna(0)
+    esp["especie"] = clean_text_series(esp["especie"])
 
-    # =========================
-    # 3) COMPRADO por ESPECIE (desde COMPRAS, via cve_art -> especie)
-    # =========================
-    # Si COMPRAS no tiene cve_art, intentamos por 'articulo' NO (porque no está garantizado).
-    if dfc_f["cve_art"].astype(str).str.strip().eq("").all():
-        st.warning("COMPRAS no trae 'cve_art'. No se podrá calcular 'comprado' por especie con cruce por código.")
+    # ========= 3) comprado por especie (compras via codigo) =========
+    comp_code_col = pick_code_col(dfc_f, ["cve_art", "clave"])
+    if not comp_code_col:
         comp_esp = pd.DataFrame({"especie": [], "comprado": []})
+        st.warning("COMPRAS no trae 'cve_art' ni 'clave'. 'Comprado' quedará en 0.")
     else:
         comp_art = (
-            dfc_f[dfc_f["cve_art"].astype(str).str.strip() != ""]
-            .groupby("cve_art", as_index=False)
+            dfc_f[clean_text_series(dfc_f[comp_code_col]) != ""]
+            .groupby(comp_code_col, as_index=False)
             .agg(comprado=("compras", "sum"))
         )
-        comp_art["cve_art"] = clean_text_series(comp_art["cve_art"])
-        comp_art = comp_art.merge(map_ce, on="cve_art", how="left")
+        comp_art.rename(columns={comp_code_col: "codigo"}, inplace=True)
+        comp_art["codigo"] = clean_text_series(comp_art["codigo"])
+        comp_art = comp_art.merge(map_ce, on="codigo", how="left")
         comp_esp = comp_art.groupby("especie", as_index=False).agg(comprado=("comprado", "sum"))
         comp_esp["especie"] = clean_text_series(comp_esp["especie"])
 
-    # =========================
-    # 4) NEGOCIADO por ESPECIE (desde FALTANTE, via cve_art -> especie)
-    # =========================
-    neg_art = (
-        dfn[dfn["cve_art"].astype(str).str.strip() != ""]
-        .groupby("cve_art", as_index=False)
-        .agg(negociado=("negociado", "sum"))
-    )
-    neg_art["cve_art"] = clean_text_series(neg_art["cve_art"])
-    neg_art = neg_art.merge(map_ce, on="cve_art", how="left")
-    neg_esp = neg_art.groupby("especie", as_index=False).agg(negociado=("negociado", "sum"))
-    neg_esp["especie"] = clean_text_series(neg_esp["especie"])
-
-    # =========================
-    # 5) Merge a tabla de especies
-    # =========================
-    esp["especie"] = clean_text_series(esp["especie"])
-    esp = esp.merge(comp_esp, on="especie", how="left")
-    esp = esp.merge(neg_esp, on="especie", how="left")
-    esp["comprado"] = pd.to_numeric(esp.get("comprado"), errors="coerce").fillna(0)
-    esp["negociado"] = pd.to_numeric(esp.get("negociado"), errors="coerce").fillna(0)
-
-    # =========================
-    # 6) PARETO 80/20 (UTILIDAD) + VERDE
-    # =========================
-    esp = esp[esp["utilidad"] > 0].copy()
-    esp = esp.sort_values("utilidad", ascending=False).reset_index(drop=True)
-
-    total_util = float(esp["utilidad"].sum())
-    if total_util > 0:
-        esp["util_acum"] = esp["utilidad"].cumsum()
-        esp["pct_acum"] = esp["util_acum"] / total_util
-        esp["top_80"] = esp["pct_acum"] <= 0.80
-        idx_cruce = esp[esp["pct_acum"] > 0.80].index.min()
-        if pd.notna(idx_cruce):
-            esp.loc[idx_cruce, "top_80"] = True
+    # ========= 4) negociado por especie (faltante via codigo) =========
+    neg_code_col = pick_code_col(dfn, ["cve_art", "clave"])
+    if not neg_code_col:
+        neg_esp = pd.DataFrame({"especie": [], "negociado": []})
+        st.warning("FALTANTE no trae 'cve_art' ni 'clave'. 'Negociado' quedará en 0.")
     else:
-        esp["util_acum"] = 0
-        esp["pct_acum"] = 0
-        esp["top_80"] = False
+        neg_art = (
+            dfn[clean_text_series(dfn[neg_code_col]) != ""]
+            .groupby(neg_code_col, as_index=False)
+            .agg(negociado=("negociado", "sum"))
+        )
+        neg_art.rename(columns={neg_code_col: "codigo"}, inplace=True)
+        neg_art["codigo"] = clean_text_series(neg_art["codigo"])
+        neg_art = neg_art.merge(map_ce, on="codigo", how="left")
+        neg_esp = neg_art.groupby("especie", as_index=False).agg(negociado=("negociado", "sum"))
+        neg_esp["especie"] = clean_text_series(neg_esp["especie"])
 
-    top80_count = int(esp["top_80"].sum())
-    top80_util = float(esp.loc[esp["top_80"], "utilidad"].sum()) if total_util > 0 else 0.0
+    # ========= 5) merge =========
+    out = esp.merge(comp_esp, on="especie", how="left").merge(neg_esp, on="especie", how="left")
+    out["comprado"] = pd.to_numeric(out.get("comprado"), errors="coerce").fillna(0)
+    out["negociado"] = pd.to_numeric(out.get("negociado"), errors="coerce").fillna(0)
+
+    # ========= 6) pareto 80/20 por utilidad =========
+    out = out[out["utilidad"] > 0].copy()
+    out = out.sort_values("utilidad", ascending=False).reset_index(drop=True)
+
+    total_util = float(out["utilidad"].sum())
+    if total_util > 0:
+        out["util_acum"] = out["utilidad"].cumsum()
+        out["pct_acum"] = out["util_acum"] / total_util
+        out["top_80"] = out["pct_acum"] <= 0.80
+        idx_cruce = out[out["pct_acum"] > 0.80].index.min()
+        if pd.notna(idx_cruce):
+            out.loc[idx_cruce, "top_80"] = True
+    else:
+        out["top_80"] = False
+
+    top80_count = int(out["top_80"].sum())
+    top80_util = float(out.loc[out["top_80"], "utilidad"].sum()) if total_util > 0 else 0.0
     top80_pct = (top80_util / total_util) if total_util > 0 else 0.0
 
     c1, c2, c3 = st.columns([2, 2, 6])
@@ -497,12 +505,12 @@ if st.session_state.view == "ventas_proveedor":
     st.divider()
     st.subheader("Especies")
 
-    if esp.empty:
+    if out.empty:
         st.info("No hay especies con utilidad positiva en este rango/filtro.")
         st.stop()
 
     cols = st.columns(5)
-    for i, row in esp.iterrows():
+    for i, row in out.iterrows():
         with cols[i % 5]:
             nombre = html.escape(str(row["especie"]))
             cls = "hcard top80" if bool(row.get("top_80", False)) else "hcard"
