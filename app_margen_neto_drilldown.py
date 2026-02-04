@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 # =========================
 # LOGIN SIMPLE (PASSWORD)
@@ -16,16 +16,9 @@ def check_password():
 
     st.title("Acceso al Dashboard")
     st.caption("Ingresa la contraseña para continuar")
-
     pw = st.text_input("Contraseña", type="password")
 
-    c1, c2 = st.columns([1, 5])
-    with c1:
-        entrar = st.button("Entrar")
-    with c2:
-        st.write("")
-
-    if entrar:
+    if st.button("Entrar", use_container_width=True):
         if pw == PASSWORD:
             st.session_state.auth_ok = True
             st.rerun()
@@ -75,6 +68,12 @@ def safe_unique(df_, col):
     if col not in df_.columns:
         return []
     return sorted([x for x in df_[col].dropna().unique().tolist() if str(x).strip() != ""])
+
+def fmt_money(x):
+    return f"${float(x):,.0f}"
+
+def fmt_pct(x):
+    return f"{float(x)*100:,.2f}%"
 
 # =========================
 # LOADERS
@@ -186,10 +185,18 @@ b2.metric("Compras", f"${compras:,.2f}")
 st.divider()
 
 # =========================
-# EXPLORADOR POR ESPECIE (CLICK -> DETALLE)
+# EXPLORADOR POR ESPECIE + 80/20 (PARETO) + CLICK (SIN BOTONES)
 # =========================
+# Leemos query param ?esp=...
+qp = st.query_params
+esp_from_url = qp.get("esp", None)
+
 if "especie_click" not in st.session_state:
     st.session_state.especie_click = None
+
+# Si viene en URL, úsalo
+if esp_from_url:
+    st.session_state.especie_click = esp_from_url
 
 st.subheader("Explorador por ESPECIE (clic para ver detalle)")
 
@@ -201,39 +208,102 @@ esp = (
         piezas=("cantidad", "sum"),
     )
 )
-esp["margen_pct"] = (esp["utilidad"] / esp["venta"]).fillna(0)  # <- evita nan%
+
+esp["margen_pct"] = (esp["utilidad"] / esp["venta"]).fillna(0)
 esp = money_round(esp, ["venta", "utilidad"], 2)
 esp = int_round(esp, ["piezas"])
 
-# ORDEN: por UTILIDAD y reset para que el grid se vea ordenado
+# Orden por utilidad
 esp = esp.sort_values("utilidad", ascending=False).reset_index(drop=True)
 
+# ---- PARETO 80/20 (sobre UTILIDAD) ----
+total_util = float(esp["utilidad"].sum())
+if total_util > 0:
+    esp["utilidad_acum"] = esp["utilidad"].cumsum()
+    esp["pct_acum"] = (esp["utilidad_acum"] / total_util).fillna(0)
+    esp["top_80"] = esp["pct_acum"] <= 0.80
+    # Asegura que al menos la primera quede marcada
+    if not bool(esp["top_80"].any()) and len(esp) > 0:
+        esp.loc[0, "top_80"] = True
+else:
+    esp["utilidad_acum"] = 0
+    esp["pct_acum"] = 0
+    esp["top_80"] = False
+
+top80_count = int(esp["top_80"].sum())
+top80_util = float(esp.loc[esp["top_80"], "utilidad"].sum()) if total_util > 0 else 0.0
+top80_pct = (top80_util / total_util) if total_util > 0 else 0.0
+
+cpareto1, cpareto2, cpareto3 = st.columns([2, 2, 6])
+cpareto1.metric("Especies TOP (Pareto)", f"{top80_count}")
+cpareto2.metric("Utilidad cubierta", f"{top80_pct*100:,.2f}%")
+
+# CSS para tarjetas clicables (color TOP80 vs normal)
+st.markdown(
+    """
+    <style>
+      .card {
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 12px;
+        padding: 14px 14px;
+        margin: 8px 0px;
+        text-decoration: none !important;
+        display: block;
+        transition: transform 0.08s ease-in-out;
+      }
+      .card:hover { transform: translateY(-2px); border-color: rgba(255,255,255,0.22); }
+      .card h4 { margin: 0 0 6px 0; padding:0; font-size: 18px; color: white; }
+      .card p { margin: 0; padding:0; color: rgba(255,255,255,0.88); font-size: 14px; }
+      .tag { display:inline-block; margin-top:8px; font-size:12px; padding:3px 8px; border-radius: 999px; }
+      .top80 { background: rgba(46, 204, 113, 0.18); border: 1px solid rgba(46,204,113,0.45); }
+      .top80 .tag { background: rgba(46, 204, 113, 0.20); border: 1px solid rgba(46,204,113,0.50); }
+      .normal { background: rgba(255,255,255,0.04); }
+      .normal .tag { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# Grid 5 columnas
 cols = st.columns(5)
-for pos, row in esp.iterrows():
-    with cols[pos % 5]:
-        label = (
-            f"{row['especie']}\n\n"
-            f"Margen: {row['margen_pct']*100:,.2f}%  "
-            f"Utilidad: ${row['utilidad']:,.0f}"
+for i, row in esp.iterrows():
+    with cols[i % 5]:
+        clase = "top80" if bool(row["top_80"]) else "normal"
+        tag = "TOP 80%" if bool(row["top_80"]) else "Resto"
+        link = "?" + urlencode({"esp": str(row["especie"])})
+        st.markdown(
+            f"""
+            <a class="card {clase}" href="{link}">
+              <h4>{row["especie"]}</h4>
+              <p>Margen: {fmt_pct(row["margen_pct"])} &nbsp;&nbsp; Utilidad: {fmt_money(row["utilidad"])}</p>
+              <span class="tag">{tag}</span>
+            </a>
+            """,
+            unsafe_allow_html=True
         )
-        if st.button(label, use_container_width=True, key=f"esp_{pos}"):
-            st.session_state.especie_click = row["especie"]
-            st.rerun()
 
 c_clear, _ = st.columns([2, 8])
 if c_clear.button("Limpiar selección", use_container_width=True):
+    st.query_params.clear()
     st.session_state.especie_click = None
     st.rerun()
 
 # =========================
 # DETALLE POR ESPECIE (PRODUCTOS)
 # =========================
-if st.session_state.especie_click:
+esp_sel = st.session_state.especie_click
+
+# Si la especie ya no existe con filtros, la limpiamos
+if esp_sel and (("especie" not in df_f.columns) or (esp_sel not in df_f["especie"].astype(str).unique())):
+    st.query_params.clear()
+    st.session_state.especie_click = None
+    esp_sel = None
+
+if esp_sel:
     st.divider()
-    esp_sel = st.session_state.especie_click
     st.subheader(f"Detalle de especie: {esp_sel}")
 
-    dfx = df_f[df_f["especie"] == esp_sel].copy()
+    dfx = df_f[df_f["especie"].astype(str) == str(esp_sel)].copy()
 
     prod = (
         dfx.groupby("articulo", as_index=False)
