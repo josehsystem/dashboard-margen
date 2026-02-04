@@ -183,7 +183,8 @@ st.divider()
 
 # =========================
 # EXPLORADOR POR ESPECIE + 80/20 (PARETO)
-# (CLICK EN TODA LA TARJETA SIN RECARGAR)
+# - CLICK EN TODA LA TARJETA SIN RECARGAR
+# - TOP 80% SE PINTA EN VERDE (REAL)
 # =========================
 if "especie_click" not in st.session_state:
     st.session_state.especie_click = None
@@ -211,8 +212,6 @@ total_util = float(esp["utilidad"].sum())
 if total_util > 0:
     esp["utilidad_acum"] = esp["utilidad"].cumsum()
     esp["pct_acum"] = (esp["utilidad_acum"] / total_util).fillna(0)
-
-    # Marca TOP80 incluyendo la especie que "cruza" el 80%
     esp["top_80"] = esp["pct_acum"] <= 0.80
     first_over = esp.index[esp["pct_acum"] > 0.80]
     if len(first_over) > 0:
@@ -231,41 +230,37 @@ cpareto1.metric("Especies TOP", f"{top80_count}")
 cpareto2.metric("Utilidad cubierta", f"{top80_pct*100:,.2f}%")
 cpareto3.caption("Las tarjetas en VERDE son las especies que acumulan ~80% de la utilidad neta (-7%).")
 
-# CSS para que un st.button se vea como tarjeta + color TOP80
+# CSS: pintamos VERDE usando nth-of-type (estable por columna) + clase wrapper por tarjeta
 st.markdown(
     """
     <style>
-      /* base card */
-      div.stButton > button {
-        width: 100%;
-        border-radius: 14px;
-        padding: 18px 14px;
-        border: 1px solid rgba(255,255,255,0.12);
-        background: rgba(255,255,255,0.04);
-        color: white;
-        text-align: center;
-        white-space: pre-line;
-        line-height: 1.25;
+      .cardwrap button {
+        width: 100% !important;
+        border-radius: 14px !important;
+        padding: 18px 14px !important;
+        border: 1px solid rgba(255,255,255,0.12) !important;
+        background: rgba(255,255,255,0.04) !important;
+        color: white !important;
+        text-align: center !important;
+        white-space: pre-line !important;
+        line-height: 1.25 !important;
       }
-      div.stButton > button:hover {
-        border-color: rgba(255,255,255,0.22);
-        transform: translateY(-1px);
+      .cardwrap button:hover {
+        border-color: rgba(255,255,255,0.22) !important;
+        transform: translateY(-1px) !important;
       }
-
-      /* top80 wrapper makes that button green */
-      .top80wrap div.stButton > button{
-        background: rgba(46, 204, 113, 0.18) !important;
-        border: 1px solid rgba(46,204,113,0.55) !important;
-      }
-      .top80wrap div.stButton > button:hover{
+      .top80wrap button{
+        background: rgba(46, 204, 113, 0.24) !important;
         border: 1px solid rgba(46,204,113,0.75) !important;
+      }
+      .top80wrap button:hover{
+        border: 1px solid rgba(46,204,113,0.95) !important;
       }
     </style>
     """,
     unsafe_allow_html=True
 )
 
-# Grid 5 columnas (tarjetas)
 cols = st.columns(5)
 for i, row in esp.iterrows():
     with cols[i % 5]:
@@ -276,13 +271,15 @@ for i, row in esp.iterrows():
         )
 
         if bool(row["top_80"]):
-            st.markdown('<div class="top80wrap">', unsafe_allow_html=True)
+            st.markdown('<div class="cardwrap top80wrap">', unsafe_allow_html=True)
             if st.button(label, key=f"esp_{i}", use_container_width=True):
                 st.session_state.especie_click = row["especie"]
             st.markdown("</div>", unsafe_allow_html=True)
         else:
+            st.markdown('<div class="cardwrap">', unsafe_allow_html=True)
             if st.button(label, key=f"esp_{i}", use_container_width=True):
                 st.session_state.especie_click = row["especie"]
+            st.markdown("</div>", unsafe_allow_html=True)
 
 c_clear, _ = st.columns([2, 8])
 if c_clear.button("Limpiar selección", use_container_width=True):
