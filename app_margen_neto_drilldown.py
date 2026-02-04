@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from urllib.parse import quote, urlencode
+from urllib.parse import quote
 
 # =========================
 # LOGIN SIMPLE (PASSWORD)
@@ -16,8 +16,8 @@ def check_password():
 
     st.title("Acceso al Dashboard")
     st.caption("Ingresa la contraseña para continuar")
-    pw = st.text_input("Contraseña", type="password")
 
+    pw = st.text_input("Contraseña", type="password")
     if st.button("Entrar", use_container_width=True):
         if pw == PASSWORD:
             st.session_state.auth_ok = True
@@ -69,11 +69,8 @@ def safe_unique(df_, col):
         return []
     return sorted([x for x in df_[col].dropna().unique().tolist() if str(x).strip() != ""])
 
-def fmt_money(x):
+def fmt_money0(x):
     return f"${float(x):,.0f}"
-
-def fmt_pct(x):
-    return f"{float(x)*100:,.2f}%"
 
 # =========================
 # LOADERS
@@ -185,20 +182,13 @@ b2.metric("Compras", f"${compras:,.2f}")
 st.divider()
 
 # =========================
-# EXPLORADOR POR ESPECIE + 80/20 (PARETO) + CLICK (SIN BOTONES)
+# EXPLORADOR POR ESPECIE + 80/20 (PARETO)
+# (CLICK EN TODA LA TARJETA SIN RECARGAR)
 # =========================
-# Leemos query param ?esp=...
-qp = st.query_params
-esp_from_url = qp.get("esp", None)
-
 if "especie_click" not in st.session_state:
     st.session_state.especie_click = None
 
-# Si viene en URL, úsalo
-if esp_from_url:
-    st.session_state.especie_click = esp_from_url
-
-st.subheader("Explorador por ESPECIE (clic para ver detalle)")
+st.subheader("Explorador por ESPECIE (Pareto 80/20 por UTILIDAD)")
 
 esp = (
     df_f.groupby("especie", as_index=False)
@@ -216,15 +206,17 @@ esp = int_round(esp, ["piezas"])
 # Orden por utilidad
 esp = esp.sort_values("utilidad", ascending=False).reset_index(drop=True)
 
-# ---- PARETO 80/20 (sobre UTILIDAD) ----
+# ---- PARETO 80/20 por UTILIDAD ----
 total_util = float(esp["utilidad"].sum())
 if total_util > 0:
     esp["utilidad_acum"] = esp["utilidad"].cumsum()
     esp["pct_acum"] = (esp["utilidad_acum"] / total_util).fillna(0)
+
+    # Marca TOP80 incluyendo la especie que "cruza" el 80%
     esp["top_80"] = esp["pct_acum"] <= 0.80
-    # Asegura que al menos la primera quede marcada
-    if not bool(esp["top_80"].any()) and len(esp) > 0:
-        esp.loc[0, "top_80"] = True
+    first_over = esp.index[esp["pct_acum"] > 0.80]
+    if len(first_over) > 0:
+        esp.loc[first_over[0], "top_80"] = True
 else:
     esp["utilidad_acum"] = 0
     esp["pct_acum"] = 0
@@ -235,67 +227,73 @@ top80_util = float(esp.loc[esp["top_80"], "utilidad"].sum()) if total_util > 0 e
 top80_pct = (top80_util / total_util) if total_util > 0 else 0.0
 
 cpareto1, cpareto2, cpareto3 = st.columns([2, 2, 6])
-cpareto1.metric("Especies TOP (Pareto)", f"{top80_count}")
+cpareto1.metric("Especies TOP", f"{top80_count}")
 cpareto2.metric("Utilidad cubierta", f"{top80_pct*100:,.2f}%")
+cpareto3.caption("Las tarjetas en VERDE son las especies que acumulan ~80% de la utilidad neta (-7%).")
 
-# CSS para tarjetas clicables (color TOP80 vs normal)
+# CSS para que un st.button se vea como tarjeta + color TOP80
 st.markdown(
     """
     <style>
-      .card {
+      /* base card */
+      div.stButton > button {
+        width: 100%;
+        border-radius: 14px;
+        padding: 18px 14px;
         border: 1px solid rgba(255,255,255,0.12);
-        border-radius: 12px;
-        padding: 14px 14px;
-        margin: 8px 0px;
-        text-decoration: none !important;
-        display: block;
-        transition: transform 0.08s ease-in-out;
+        background: rgba(255,255,255,0.04);
+        color: white;
+        text-align: center;
+        white-space: pre-line;
+        line-height: 1.25;
       }
-      .card:hover { transform: translateY(-2px); border-color: rgba(255,255,255,0.22); }
-      .card h4 { margin: 0 0 6px 0; padding:0; font-size: 18px; color: white; }
-      .card p { margin: 0; padding:0; color: rgba(255,255,255,0.88); font-size: 14px; }
-      .tag { display:inline-block; margin-top:8px; font-size:12px; padding:3px 8px; border-radius: 999px; }
-      .top80 { background: rgba(46, 204, 113, 0.18); border: 1px solid rgba(46,204,113,0.45); }
-      .top80 .tag { background: rgba(46, 204, 113, 0.20); border: 1px solid rgba(46,204,113,0.50); }
-      .normal { background: rgba(255,255,255,0.04); }
-      .normal .tag { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); }
+      div.stButton > button:hover {
+        border-color: rgba(255,255,255,0.22);
+        transform: translateY(-1px);
+      }
+
+      /* top80 wrapper makes that button green */
+      .top80wrap div.stButton > button{
+        background: rgba(46, 204, 113, 0.18) !important;
+        border: 1px solid rgba(46,204,113,0.55) !important;
+      }
+      .top80wrap div.stButton > button:hover{
+        border: 1px solid rgba(46,204,113,0.75) !important;
+      }
     </style>
     """,
     unsafe_allow_html=True
 )
 
-# Grid 5 columnas
+# Grid 5 columnas (tarjetas)
 cols = st.columns(5)
 for i, row in esp.iterrows():
     with cols[i % 5]:
-        clase = "top80" if bool(row["top_80"]) else "normal"
-        tag = "TOP 80%" if bool(row["top_80"]) else "Resto"
-        link = "?" + urlencode({"esp": str(row["especie"])})
-        st.markdown(
-            f"""
-            <a class="card {clase}" href="{link}">
-              <h4>{row["especie"]}</h4>
-              <p>Margen: {fmt_pct(row["margen_pct"])} &nbsp;&nbsp; Utilidad: {fmt_money(row["utilidad"])}</p>
-              <span class="tag">{tag}</span>
-            </a>
-            """,
-            unsafe_allow_html=True
+        label = (
+            f"{row['especie']}\n\n"
+            f"Margen: {row['margen_pct']*100:,.2f}%   "
+            f"Utilidad: {fmt_money0(row['utilidad'])}"
         )
+
+        if bool(row["top_80"]):
+            st.markdown('<div class="top80wrap">', unsafe_allow_html=True)
+            if st.button(label, key=f"esp_{i}", use_container_width=True):
+                st.session_state.especie_click = row["especie"]
+            st.markdown("</div>", unsafe_allow_html=True)
+        else:
+            if st.button(label, key=f"esp_{i}", use_container_width=True):
+                st.session_state.especie_click = row["especie"]
 
 c_clear, _ = st.columns([2, 8])
 if c_clear.button("Limpiar selección", use_container_width=True):
-    st.query_params.clear()
     st.session_state.especie_click = None
-    st.rerun()
 
 # =========================
-# DETALLE POR ESPECIE (PRODUCTOS)
+# DETALLE POR ESPECIE (PRODUCTOS) - SIN RECARGA
 # =========================
 esp_sel = st.session_state.especie_click
 
-# Si la especie ya no existe con filtros, la limpiamos
 if esp_sel and (("especie" not in df_f.columns) or (esp_sel not in df_f["especie"].astype(str).unique())):
-    st.query_params.clear()
     st.session_state.especie_click = None
     esp_sel = None
 
